@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Basic 2D Sandbox</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Press Start 2P', cursive;
+            overflow: hidden; /* Prevent scrolling */
+            background-color: #333; /* Dark background */
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        canvas {
+            display: block;
+            background-color: #87CEEB; /* Sky blue */
+            border: 2px solid #000;
+            max-width: 100%;
+            max-height: 70vh; /* Limit canvas height */
+            aspect-ratio: 16 / 9; /* Maintain aspect ratio */
+            image-rendering: pixelated; /* Keep pixels sharp */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
+            border-radius: 0.5rem; /* Rounded corners for canvas */
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3); /* Shadow for depth */
+        }
+        .controls {
+            margin-top: 1rem;
+            display: flex;
+            gap: 0.5rem; /* Space between buttons */
+            flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
+            justify-content: center;
+        }
+        .control-button {
+            background-color: #60a5fa; /* Blue */
+            color: white;
+            border: 2px solid #1e3a8a; /* Darker blue border */
+            padding: 0.75rem 1rem;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.8rem;
+            cursor: pointer;
+            border-radius: 0.5rem; /* Rounded corners */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            transition: background-color 0.2s, transform 0.1s;
+            user-select: none; /* Prevent text selection */
+            -webkit-user-select: none; /* Safari */
+            -ms-user-select: none; /* IE 10+ */
+        }
+        .control-button:active {
+            background-color: #2563eb; /* Darker blue on press */
+            transform: translateY(1px); /* Slight press effect */
+        }
+        .message-box {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            z-index: 100;
+            display: none; /* Hidden by default */
+            text-align: center;
+        }
+    </style>
+</head>
+<body class="bg-gray-800 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <h1 class="text-2xl mb-4 text-white">Basic 2D Sandbox</h1>
+
+    <canvas id="gameCanvas"></canvas>
+    <div id="messageBox" class="message-box"></div>
+
+    <div class="controls">
+        <button id="btnLeft" class="control-button">Left</button>
+        <button id="btnRight" class="control-button">Right</button>
+        <button id="btnJump" class="control-button">Jump</button>
+        <button id="btnBreak" class="control-button">Break</button>
+        <button id="btnPlace" class="control-button">Place</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const messageBox = document.getElementById('messageBox');
+
+        // --- Game Settings ---
+        const TILE_SIZE = 20;
+        const WORLD_WIDTH_TILES = 100;
+        const WORLD_HEIGHT_TILES = 50;
+
+        // --- World Data ---
+        const TILE_TYPES = {
+            SKY: 0,
+            GRASS: 1,
+            DIRT: 2,
+            STONE: 3,
+            WOOD: 4,  // New: Tree trunk
+            LEAVES: 5 // New: Tree leaves
+        };
+        const TILE_COLORS = {
+            [TILE_TYPES.SKY]: '#87CEEB',    // Sky Blue
+            [TILE_TYPES.GRASS]: '#228B22',   // Forest Green
+            [TILE_TYPES.DIRT]: '#8B4513',    // Saddle Brown
+            [TILE_TYPES.STONE]: '#808080',   // Gray
+            [TILE_TYPES.WOOD]: '#A0522D',    // Sienna (for wood)
+            [TILE_TYPES.LEAVES]: '#006400'   // Dark Green (for leaves)
+        };
+        let world = [];
+
+        // --- Player Data ---
+        const PLAYER_WIDTH = TILE_SIZE * 0.8;
+        const PLAYER_HEIGHT = TILE_SIZE * 1.8;
+        const PLAYER_COLOR = '#FF0000';
+        let player = {
+            x: (WORLD_WIDTH_TILES * TILE_SIZE) / 2 - PLAYER_WIDTH / 2, y: 0,
+            vx: 0, vy: 0, speed: 3, jumpForce: 7, onGround: false
+        };
+
+        // --- Physics ---
+        const GRAVITY = 0.3;
+        const MAX_FALL_SPEED = 8;
+        const FRICTION = 0.8;
+
+        // --- Controls ---
+        let keys = {};
+        let mouse = { x: 0, y: 0, leftDown: false, rightDown: false };
+        let touchControls = { left: false, right: false, jump: false, break: false, place: false };
+        let lastBreakTime = 0;
+        let lastPlaceTime = 0;
+        const ACTION_COOLDOWN = 200;
+
+        // --- Camera ---
+        let camera = { x: 0, y: 0 };
+
+        // --- World Generation Parameters ---
+        const TERRAIN_BASE_HEIGHT = WORLD_HEIGHT_TILES * 0.6;
+        const TERRAIN_AMPLITUDE = 10;
+        const TERRAIN_SMOOTHNESS = 0.1;
+        const DIRT_LAYER_DEPTH = 5;
+        const TREE_PROBABILITY = 0.1; // Chance for a tree to spawn on a grass tile
+        const MIN_TREE_HEIGHT = 4;
+        const MAX_TREE_HEIGHT = 8;
+        const LEAF_RADIUS = 2; // How far leaves extend from the top trunk
+
+        // --- Initialization ---
+        function init() {
+            console.log("Initializing game...");
+            try {
+                resizeCanvas();
+                console.log("Canvas resized.");
+                generateWorld();
+                console.log("World generated.");
+                resetPlayerPosition();
+                console.log("Player position reset.");
+                setupEventListeners();
+                console.log("Event listeners set up.");
+                console.log("Starting game loop...");
+                requestAnimationFrame(gameLoop);
+            } catch (error) {
+                console.error("Error during initialization:", error);
+                showMessage(`Initialization Error! Check console.\n${error.message}`, 10000);
+            }
+        }
+
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            const maxWidth = container.clientWidth * 0.95;
+            const maxHeight = window.innerHeight * 0.7;
+            const aspectRatio = 16 / 9;
+            let newWidth = maxWidth;
+            let newHeight = newWidth / aspectRatio;
+
+            if (newHeight > maxHeight) {
+                newHeight = maxHeight;
+                newWidth = newHeight * aspectRatio;
+            }
+
+            canvas.width = Math.max(10, Math.floor(newWidth));
+            canvas.height = Math.max(10, Math.floor(newHeight));
+            ctx.imageSmoothingEnabled = false;
+            console.log(`Canvas resized to: ${canvas.width}x${canvas.height}`);
+        }
+
+        // --- Simple Noise Function ---
+        function simpleNoise(x, seed) {
+            const floorX = Math.floor(x);
+            const fractX = x - floorX;
+            const rand = (n) => {
+                const sin = Math.sin(n * 12.9898 + seed * 78.233) * 43758.5453;
+                return sin - Math.floor(sin);
+            };
+            const v1 = rand(floorX);
+            const v2 = rand(floorX + 1);
+            const t = (1 - Math.cos(fractX * Math.PI)) * 0.5;
+            return v1 * (1 - t) + v2 * t;
+        }
+
+
+        function generateWorld() {
+            console.log("Generating world terrain...");
+            world = new Array(WORLD_HEIGHT_TILES).fill(0).map(() => new Array(WORLD_WIDTH_TILES).fill(TILE_TYPES.SKY));
+            const terrainSeed = Math.random() * 1000;
+
+            // --- Generate Base Terrain ---
+            for (let x = 0; x < WORLD_WIDTH_TILES; x++) {
+                const noiseVal = simpleNoise(x * TERRAIN_SMOOTHNESS, terrainSeed);
+                const groundHeight = Math.floor(TERRAIN_BASE_HEIGHT + (noiseVal - 0.5) * 2 * TERRAIN_AMPLITUDE);
+
+                for (let y = 0; y < WORLD_HEIGHT_TILES; y++) {
+                    if (y > groundHeight + DIRT_LAYER_DEPTH + Math.random() * 3) {
+                        world[y][x] = TILE_TYPES.STONE;
+                    } else if (y > groundHeight) {
+                         world[y][x] = TILE_TYPES.DIRT;
+                    } else if (y === groundHeight) {
+                        world[y][x] = TILE_TYPES.GRASS;
+                    } else {
+                        world[y][x] = TILE_TYPES.SKY;
+                    }
+                }
+            }
+            console.log("Terrain generation complete.");
+
+             // --- Generate Trees ---
+             console.log("Generating trees...");
+             for (let x = 1; x < WORLD_WIDTH_TILES - 1; x++) { // Avoid edges for simplicity
+                 for (let y = 1; y < WORLD_HEIGHT_TILES - 1; y++) {
+                     // Check if current tile is grass and the one below is dirt/grass/stone
+                     if (world[y][x] === TILE_TYPES.GRASS && isSolidBase(world[y + 1]?.[x])) {
+                         // Random chance to place a tree
+                         if (Math.random() < TREE_PROBABILITY) {
+                             const treeHeight = MIN_TREE_HEIGHT + Math.floor(Math.random() * (MAX_TREE_HEIGHT - MIN_TREE_HEIGHT + 1));
+
+                             // Check for enough space above
+                             let canPlaceTree = true;
+                             for (let i = 1; i < treeHeight + LEAF_RADIUS; i++) {
+                                 if (y - i < 0 || world[y - i]?.[x] !== TILE_TYPES.SKY) {
+                                     canPlaceTree = false;
+                                     break;
+                                 }
+                             }
+
+                             if (canPlaceTree) {
+                                 // Place trunk
+                                 for (let i = 0; i < treeHeight; i++) {
+                                     if (y - i >= 0) {
+                                         world[y - i][x] = TILE_TYPES.WOOD;
+                                     }
+                                 }
+                                 // Place leaves (simple square/circle shape)
+                                 const topY = y - treeHeight;
+                                 for (let ly = -LEAF_RADIUS; ly <= LEAF_RADIUS; ly++) {
+                                     for (let lx = -LEAF_RADIUS; lx <= LEAF_RADIUS; lx++) {
+                                         // Basic circular shape check (optional)
+                                         if (lx * lx + ly * ly > LEAF_RADIUS * LEAF_RADIUS + 1) continue;
+
+                                         const leafX = x + lx;
+                                         const leafY = topY + ly;
+
+                                         // Check bounds and if the spot is currently sky or part of the trunk top
+                                         if (leafX >= 0 && leafX < WORLD_WIDTH_TILES && leafY >= 0 && leafY < WORLD_HEIGHT_TILES) {
+                                             if (world[leafY][leafX] === TILE_TYPES.SKY || world[leafY][leafX] === TILE_TYPES.WOOD) {
+                                                  world[leafY][leafX] = TILE_TYPES.LEAVES;
+                                             }
+                                         }
+                                     }
+                                 }
+                                 // Ensure the original grass block becomes wood
+                                 world[y][x] = TILE_TYPES.WOOD;
+                             }
+                         }
+                     }
+                 }
+             }
+             console.log("Tree generation complete.");
+        }
+
+        // Helper to check if a tile type is suitable ground for a tree
+        function isSolidBase(tileType) {
+            return tileType === TILE_TYPES.DIRT || tileType === TILE_TYPES.GRASS || tileType === TILE_TYPES.STONE;
+        }
+
+        function resetPlayerPosition() {
+            console.log("Attempting to reset player position...");
+            const startX = Math.floor(WORLD_WIDTH_TILES / 2);
+            let startY = -1;
+
+            // Find the highest solid block in the starting column
+            for (let y = 0; y < WORLD_HEIGHT_TILES; y++) {
+                if (isSolid(startX, y)) {
+                    startY = y;
+                    console.log(`Highest solid block found at [${startX}, ${y}] type: ${world[y][startX]}`);
+                    break;
+                }
+            }
+
+            if (startY === -1) {
+                console.error(`Could not find any solid ground at column ${startX} to place player!`);
+                player.x = startX * TILE_SIZE;
+                player.y = TERRAIN_BASE_HEIGHT * TILE_SIZE - PLAYER_HEIGHT * 2; // Default placement
+                showMessage("Warning: Couldn't find ground at spawn.", 5000);
+            } else {
+                 // Place player safely above the highest solid block found
+                player.x = startX * TILE_SIZE;
+                player.y = (startY - 3) * TILE_SIZE; // Start 3 tiles above ground/tree
+            }
+
+            player.vx = 0;
+            player.vy = 0;
+            player.onGround = false;
+            console.log(`Player reset to X: ${player.x.toFixed(2)}, Y: ${player.y.toFixed(2)}`);
+        }
+
+
+        // --- Event Listeners Setup ---
+        function setupEventListeners() {
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mousedown', handleMouseDown);
+            canvas.addEventListener('mouseup', handleMouseUp);
+            canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+            setupTouchControls();
+            window.addEventListener('resize', resizeCanvas);
+        }
+
+
+        // --- Input Handling ---
+        function handleKeyDown(e) { keys[e.code] = true; }
+        function handleKeyUp(e) { keys[e.code] = false; }
+
+        function handleMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            mouse.x = (e.clientX - rect.left) * scaleX;
+            mouse.y = (e.clientY - rect.top) * scaleY;
+        }
+
+        function handleMouseDown(e) {
+            if (e.button === 0) mouse.leftDown = true;
+            if (e.button === 2) mouse.rightDown = true;
+        }
+
+        function handleMouseUp(e) {
+            if (e.button === 0) mouse.leftDown = false;
+            if (e.button === 2) mouse.rightDown = false;
+        }
+
+        function setupTouchControls() {
+            const btnLeft = document.getElementById('btnLeft');
+            const btnRight = document.getElementById('btnRight');
+            const btnJump = document.getElementById('btnJump');
+            const btnBreak = document.getElementById('btnBreak');
+            const btnPlace = document.getElementById('btnPlace');
+
+            if (!btnLeft || !btnRight || !btnJump || !btnBreak || !btnPlace) {
+                console.error("One or more control buttons not found!");
+                return;
+            }
+
+            const handleTouchStart = (control) => (e) => { e.preventDefault(); touchControls[control] = true; };
+            const handleTouchEnd = (control) => (e) => { e.preventDefault(); touchControls[control] = false; };
+
+            btnLeft.addEventListener('touchstart', handleTouchStart('left'), { passive: false });
+            btnRight.addEventListener('touchstart', handleTouchStart('right'), { passive: false });
+            btnJump.addEventListener('touchstart', handleTouchStart('jump'), { passive: false });
+            btnBreak.addEventListener('touchstart', handleTouchStart('break'), { passive: false });
+            btnPlace.addEventListener('touchstart', handleTouchStart('place'), { passive: false });
+
+            btnLeft.addEventListener('touchend', handleTouchEnd('left'));
+            btnRight.addEventListener('touchend', handleTouchEnd('right'));
+            btnJump.addEventListener('touchend', handleTouchEnd('jump'));
+            btnBreak.addEventListener('touchend', handleTouchEnd('break'));
+            btnPlace.addEventListener('touchend', handleTouchEnd('place'));
+
+             document.body.addEventListener('touchstart', function(e) {
+                if (e.target.classList.contains('control-button')) e.preventDefault();
+            }, { passive: false });
+             document.body.addEventListener('touchend', function(e) {
+                if (e.target.classList.contains('control-button')) e.preventDefault();
+            }, { passive: false });
+        }
+
+
+        // --- Game Logic (Update function) ---
+        function update(deltaTime) {
+            // Player Movement Input, Friction, Jumping, Gravity (mostly unchanged)
+             let targetVx = 0;
+            if (keys['KeyA'] || keys['ArrowLeft'] || touchControls.left) targetVx = -player.speed;
+            if (keys['KeyD'] || keys['ArrowRight'] || touchControls.right) targetVx = player.speed;
+            player.vx += (targetVx - player.vx) * (1 - Math.pow(FRICTION, deltaTime));
+
+             if ((keys['KeyW'] || keys['ArrowUp'] || keys['Space'] || touchControls.jump) && player.onGround) {
+                player.vy = -player.jumpForce;
+                player.onGround = false;
+            }
+            player.vy += GRAVITY * deltaTime;
+            player.vy = Math.min(player.vy, MAX_FALL_SPEED);
+
+            // --- Collision Detection & Resolution ---
+            let nextX = player.x + player.vx * deltaTime;
+            let nextY = player.y + player.vy * deltaTime;
+            player.onGround = false;
+
+            const currentBounds = { x: player.x, y: player.y, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
+            const nextBoundsY = { x: player.x, y: nextY, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
+
+            // Vertical Collision
+            const verticalTilesToCheck = getTilesInBounds(nextBoundsY);
+            let collidedY = false;
+            for (const tile of verticalTilesToCheck) {
+                if (isSolid(tile.x, tile.y)) { // isSolid now checks new types
+                    const tileBounds = { x: tile.x * TILE_SIZE, y: tile.y * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE };
+                    if (rectOverlap(nextBoundsY, tileBounds)) {
+                        if (player.vy >= 0) {
+                            player.y = tile.y * TILE_SIZE - PLAYER_HEIGHT - 0.01;
+                            player.onGround = true;
+                        } else {
+                            player.y = (tile.y + 1) * TILE_SIZE;
+                        }
+                        player.vy = 0;
+                        nextY = player.y;
+                        collidedY = true;
+                        break;
+                    }
+                }
+            }
+             if (!collidedY) player.y = nextY;
+
+            // Horizontal Collision
+            const nextBoundsX = { x: nextX, y: player.y, width: PLAYER_WIDTH, height: PLAYER_HEIGHT }; // Use corrected Y
+            const horizontalTilesToCheck = getTilesInBounds(nextBoundsX);
+            let collidedX = false;
+            for (const tile of horizontalTilesToCheck) {
+                if (isSolid(tile.x, tile.y)) { // isSolid now checks new types
+                    const tileBounds = { x: tile.x * TILE_SIZE, y: tile.y * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE };
+                    if (rectOverlap(nextBoundsX, tileBounds)) {
+                        if (player.vx > 0) {
+                            player.x = tile.x * TILE_SIZE - PLAYER_WIDTH - 0.01;
+                        } else if (player.vx < 0) {
+                            player.x = (tile.x + 1) * TILE_SIZE;
+                        }
+                        player.vx = 0;
+                        nextX = player.x;
+                        collidedX = true;
+                        break;
+                    }
+                }
+            }
+              if (!collidedX) player.x = nextX;
+
+            // World Boundaries (unchanged)
+            player.x = Math.max(0, Math.min(player.x, WORLD_WIDTH_TILES * TILE_SIZE - PLAYER_WIDTH));
+            if (player.y > WORLD_HEIGHT_TILES * TILE_SIZE + TILE_SIZE * 5) {
+                 showMessage("Fell out of the world!");
+                 resetPlayerPosition();
+                 return;
+            }
+
+            // Block Breaking/Placing (interaction logic unchanged, works with new types)
+            handleBlockInteraction();
+
+            // Update Camera (unchanged)
+            updateCamera();
+
+            // NaN Check (unchanged)
+             if (isNaN(player.x) || isNaN(player.y) || isNaN(camera.x) || isNaN(camera.y)) {
+                 console.error(`NaN detected! Player: (${player.x}, ${player.y}), Camera: (${camera.x}, ${camera.y})`);
+             }
+        }
+
+        // Helper function to get tile coordinates within a bounding box
+        function getTilesInBounds(bounds) {
+            const tiles = [];
+            const buffer = 0.01;
+            const startX = Math.floor((bounds.x + buffer) / TILE_SIZE);
+            const endX = Math.floor((bounds.x + bounds.width - buffer) / TILE_SIZE);
+            const startY = Math.floor((bounds.y + buffer) / TILE_SIZE);
+            const endY = Math.floor((bounds.y + bounds.height - buffer) / TILE_SIZE);
+
+            for (let y = startY; y <= endY; y++) {
+                for (let x = startX; x <= endX; x++) {
+                    if (x >= 0 && x < WORLD_WIDTH_TILES && y >= 0 && y < WORLD_HEIGHT_TILES) {
+                         tiles.push({ x, y });
+                    }
+                }
+            }
+            return tiles;
+        }
+
+        // Updated isSolid function to handle new tile types
+        function isSolid(tileX, tileY) {
+            if (tileX < 0 || tileX >= WORLD_WIDTH_TILES || tileY < 0 || tileY >= WORLD_HEIGHT_TILES) {
+                return false;
+            }
+             if (!world || !world[tileY]) {
+                 console.error(`Attempted to check solidity at invalid coordinates or uninitialized world: [${tileX}, ${tileY}]`);
+                 return false;
+             }
+            const tileType = world[tileY][tileX];
+            // Define which tiles block movement
+            return tileType === TILE_TYPES.GRASS ||
+                   tileType === TILE_TYPES.DIRT ||
+                   tileType === TILE_TYPES.STONE ||
+                   tileType === TILE_TYPES.WOOD; // Wood is solid, Leaves and Sky are not
+        }
+
+        function handleBlockInteraction() {
+            const currentTime = Date.now();
+            let targetX, targetY;
+            let usingMouse = mouse.leftDown || mouse.rightDown;
+            let usingTouchBreak = touchControls.break;
+            let usingTouchPlace = touchControls.place;
+
+            // Determine target tile (same logic as before)
+            if (usingMouse) {
+                const worldMouseX = mouse.x + camera.x;
+                const worldMouseY = mouse.y + camera.y;
+                targetX = Math.floor(worldMouseX / TILE_SIZE);
+                targetY = Math.floor(worldMouseY / TILE_SIZE);
+            } else if (usingTouchBreak || usingTouchPlace) {
+                 const lookDist = TILE_SIZE * 1.5;
+                 let facingDirection = (player.vx > 0.1) ? 1 : ((player.vx < -0.1) ? -1 : 1);
+                 const lookX = player.x + PLAYER_WIDTH / 2 + (facingDirection * lookDist);
+                 const lookY = player.y + PLAYER_HEIGHT / 2;
+                 targetX = Math.floor(lookX / TILE_SIZE);
+                 targetY = Math.floor(lookY / TILE_SIZE);
+            } else {
+                return;
+            }
+
+            // Check range (same logic as before)
+            const playerCenterX = player.x + PLAYER_WIDTH / 2;
+            const playerCenterY = player.y + PLAYER_HEIGHT / 2;
+            const targetCenterX = (targetX + 0.5) * TILE_SIZE;
+            const targetCenterY = (targetY + 0.5) * TILE_SIZE;
+            const dx = playerCenterX - targetCenterX;
+            const dy = playerCenterY - targetCenterY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const MAX_INTERACTION_RANGE = TILE_SIZE * 5;
+
+            if (distance > MAX_INTERACTION_RANGE) return;
+
+            // --- Breaking --- (Works for any non-sky tile)
+             if ((mouse.leftDown || usingTouchBreak) && currentTime - lastBreakTime > ACTION_COOLDOWN) {
+                 if (targetX >= 0 && targetX < WORLD_WIDTH_TILES && targetY >= 0 && targetY < WORLD_HEIGHT_TILES) {
+                     if (world[targetY]?.[targetX] !== TILE_TYPES.SKY) {
+                         // TODO: Later, could drop specific items (wood, sapling) based on broken type
+                         world[targetY][targetX] = TILE_TYPES.SKY;
+                         lastBreakTime = currentTime;
+                     }
+                 }
+             }
+
+            // --- Placing --- (Still places DIRT, could be enhanced later)
+            if ((mouse.rightDown || usingTouchPlace) && currentTime - lastPlaceTime > ACTION_COOLDOWN) {
+                 if (targetX >= 0 && targetX < WORLD_WIDTH_TILES && targetY >= 0 && targetY < WORLD_HEIGHT_TILES) {
+                     if (world[targetY]?.[targetX] === TILE_TYPES.SKY) {
+                         const playerRect = { x: player.x, y: player.y, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
+                         const blockRect = { x: targetX * TILE_SIZE, y: targetY * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE };
+
+                         if (!rectOverlap(playerRect, blockRect)) {
+                             // Check for adjacent support (solid blocks including wood now)
+                             const hasSupport = isSolid(targetX + 1, targetY) || isSolid(targetX - 1, targetY) ||
+                                               isSolid(targetX, targetY + 1) || isSolid(targetX, targetY - 1);
+                             if (hasSupport) {
+                                // TODO: Later, place block based on inventory selection
+                                world[targetY][targetX] = TILE_TYPES.DIRT; // Default to placing dirt
+                                lastPlaceTime = currentTime;
+                             }
+                         }
+                     }
+                 }
+             }
+        }
+
+        // Simple Axis-Aligned Bounding Box collision check
+        function rectOverlap(rect1, rect2) {
+            return rect1.x < rect2.x + rect2.width &&
+                   rect1.x + rect1.width > rect2.x &&
+                   rect1.y < rect2.y + rect2.height &&
+                   rect1.y + rect1.height > rect2.y;
+        }
+
+        function updateCamera() {
+            const targetCameraX = player.x + PLAYER_WIDTH / 2 - canvas.width / 2;
+            const targetCameraY = player.y + PLAYER_HEIGHT / 2 - canvas.height / 2;
+            const lerpFactor = 0.1;
+
+            camera.x += (targetCameraX - camera.x) * lerpFactor;
+            camera.y += (targetCameraY - camera.y) * lerpFactor;
+
+            camera.x = Math.max(0, Math.min(camera.x, WORLD_WIDTH_TILES * TILE_SIZE - canvas.width));
+            camera.y = Math.max(0, Math.min(camera.y, WORLD_HEIGHT_TILES * TILE_SIZE - canvas.height));
+
+             camera.x = Math.floor(camera.x);
+             camera.y = Math.floor(camera.y);
+        }
+
+
+        // --- Rendering ---
+        function draw() {
+            ctx.fillStyle = TILE_COLORS[TILE_TYPES.SKY];
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+             if (isNaN(camera.x) || isNaN(camera.y) || !isFinite(camera.x) || !isFinite(camera.y)) {
+                 console.error("Invalid camera coordinates before drawing:", camera.x, camera.y);
+                 ctx.fillStyle = "red"; ctx.font = "12px 'Press Start 2P'"; ctx.fillText("Camera Error!", 10, 20);
+                 return;
+             }
+
+            ctx.save();
+            ctx.translate(-camera.x, -camera.y);
+
+            // Draw World Tiles (includes new types)
+            const startCol = Math.floor(camera.x / TILE_SIZE);
+            const endCol = Math.min(startCol + Math.ceil(canvas.width / TILE_SIZE) + 1, WORLD_WIDTH_TILES);
+            const startRow = Math.floor(camera.y / TILE_SIZE);
+            const endRow = Math.min(startRow + Math.ceil(canvas.height / TILE_SIZE) + 1, WORLD_HEIGHT_TILES);
+
+            for (let y = startRow; y < endRow; y++) {
+                for (let x = startCol; x < endCol; x++) {
+                     if (x >= 0 && x < WORLD_WIDTH_TILES && y >= 0 && y < WORLD_HEIGHT_TILES) {
+                         const tileType = world[y]?.[x];
+                         // Draw any tile that isn't sky using its color from TILE_COLORS
+                         if (tileType && tileType !== TILE_TYPES.SKY) {
+                             ctx.fillStyle = TILE_COLORS[tileType];
+                             ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                         }
+                     }
+                }
+            }
+
+            // Draw Player (unchanged)
+             if (isNaN(player.x) || isNaN(player.y) || !isFinite(player.x) || !isFinite(player.y)) {
+                 console.error("Invalid player coordinates before drawing:", player.x, player.y);
+             } else {
+                 ctx.fillStyle = PLAYER_COLOR;
+                 ctx.fillRect(Math.floor(player.x), Math.floor(player.y), PLAYER_WIDTH, PLAYER_HEIGHT);
+             }
+
+            // Draw Interaction Highlight (unchanged)
+             drawInteractionHighlight();
+
+            ctx.restore();
+        }
+
+        function drawInteractionHighlight() {
+             let targetX, targetY;
+             let usingMouse = mouse.x !== undefined && mouse.y !== undefined && canvas.matches(':hover');
+
+             if (usingMouse) {
+                 const worldMouseX = mouse.x + camera.x;
+                 const worldMouseY = mouse.y + camera.y;
+                 targetX = Math.floor(worldMouseX / TILE_SIZE);
+                 targetY = Math.floor(worldMouseY / TILE_SIZE);
+             } else {
+                  const lookDist = TILE_SIZE * 1.5;
+                  let facingDirection = (player.vx > 0.1) ? 1 : ((player.vx < -0.1) ? -1 : 1);
+                  const lookX = player.x + PLAYER_WIDTH / 2 + (facingDirection * lookDist);
+                  const lookY = player.y + PLAYER_HEIGHT / 2;
+                  targetX = Math.floor(lookX / TILE_SIZE);
+                  targetY = Math.floor(lookY / TILE_SIZE);
+             }
+
+             const playerCenterX = player.x + PLAYER_WIDTH / 2;
+             const playerCenterY = player.y + PLAYER_HEIGHT / 2;
+             const targetCenterX = (targetX + 0.5) * TILE_SIZE;
+             const targetCenterY = (targetY + 0.5) * TILE_SIZE;
+             const dx = playerCenterX - targetCenterX;
+             const dy = playerCenterY - targetCenterY;
+             const distance = Math.sqrt(dx * dx + dy * dy);
+             const MAX_INTERACTION_RANGE = TILE_SIZE * 5;
+
+             if (distance <= MAX_INTERACTION_RANGE && targetX >= 0 && targetX < WORLD_WIDTH_TILES && targetY >= 0 && targetY < WORLD_HEIGHT_TILES) {
+                 ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+                 ctx.lineWidth = 2;
+                 ctx.strokeRect(targetX * TILE_SIZE + 1, targetY * TILE_SIZE + 1, TILE_SIZE - 2, TILE_SIZE - 2);
+             }
+        }
+
+        // --- Message Box ---
+        let messageTimeout;
+        function showMessage(text, duration = 3000) {
+             messageBox.textContent = text;
+             messageBox.style.display = 'block';
+             clearTimeout(messageTimeout);
+             messageTimeout = setTimeout(() => {
+                 messageBox.style.display = 'none';
+             }, duration);
+             console.log("Message displayed:", text);
+        }
+
+
+        // --- Game Loop ---
+        let lastTime = 0;
+        const TARGET_FPS = 60;
+        const TIME_STEP = 1000 / TARGET_FPS;
+        let frameCount = 0;
+        let gameLoopErrorCount = 0;
+
+        function gameLoop(timestamp) {
+             if (typeof timestamp !== 'number') timestamp = performance.now();
+             if (!lastTime) { lastTime = timestamp; requestAnimationFrame(gameLoop); return; }
+
+            const deltaTimeMs = timestamp - lastTime;
+            lastTime = timestamp;
+            const clampedDeltaTimeMs = Math.min(deltaTimeMs, TIME_STEP * 5);
+            const deltaTimeNormalized = clampedDeltaTimeMs / TIME_STEP;
+
+            if (frameCount < 5) console.log(`Frame ${frameCount}: timestamp=${timestamp.toFixed(0)}, deltaTimeMs=${deltaTimeMs.toFixed(1)}, dtNorm=${deltaTimeNormalized.toFixed(2)}`);
+
+            try {
+                update(deltaTimeNormalized);
+                draw();
+                gameLoopErrorCount = 0;
+            } catch(error) {
+                 console.error(`Error in game loop (Frame ${frameCount}):`, error);
+                 gameLoopErrorCount++;
+                 if (gameLoopErrorCount <= 5) showMessage(`Runtime Error! Check console.\n${error.message}`, 10000);
+                 if (gameLoopErrorCount > 10) {
+                    console.error("Stopping game loop due to persistent errors.");
+                    showMessage("Game stopped due to errors. Please check console.", 15000);
+                    return;
+                 }
+            }
+
+            frameCount++;
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- Start the game ---
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+
+    </script>
+
+</body>
+</html>
